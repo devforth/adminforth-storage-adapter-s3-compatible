@@ -2,6 +2,7 @@ import {
   S3Client,
   PutObjectCommand,
   GetObjectCommand,
+  DeleteObjectCommand,
   HeadBucketCommand,
   ObjectCannedACL,
 } from "@aws-sdk/client-s3";
@@ -9,18 +10,87 @@ import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { Readable } from 'stream';
 
 import type { StorageAdapter } from "adminforth";
-import { afLogger } from "adminforth";
+import { afLogger, convertPeriodToSeconds } from "adminforth";
 import type { AdapterOptions } from "./types.js";
 
 export default class AdminForthAdapterS3Storage implements StorageAdapter {
   protected s3: S3Client;
   protected options: AdapterOptions;
-
+  protected lastCleanupCheckDate: Date | null = null;
+  
   constructor(options: AdapterOptions) {
     this.options = options;
+    this.options.cleanupCheckInterval = options.cleanupCheckInterval || '1h';
+    this.options.cleanupGracePeriod = options.cleanupGracePeriod || '7d';
   }
 
+  private parceCleanupKey(key: string): {
+    timestamp: string;
+    originalKey: string;
+  } {
+    const parts = key.split('||');
+    if (parts.length !== 3) {
+      throw new Error(`Invalid cleanup key format: ${key}`);
+    }
+    return {
+      timestamp: parts[1],
+      originalKey: parts[2],
+    };
+  }
+  protected async runCleanup(): Promise<void> {
+    afLogger.debug("Running cleanup for S3-compatible storage adapter...");
+    //Getting cleanup records from the key-value adapter
+    const cleanupRecords: Record<string, string>[] = await this.options.cleanupKeyValueAdapter.listByPrefix("clean=true||", 10);
+    for (const cleanupRecord in cleanupRecords) {
+      const cleanupKey = Object.keys(cleanupRecords[cleanupRecord])[0];
+      const { timestamp, originalKey } = this.parceCleanupKey(cleanupKey);
+      
+      afLogger.debug(`Processing cleanup key: ${cleanupRecord}, original key: ${originalKey}, timestamp: ${timestamp}`);
+      const cleanupTime = new Date(timestamp);
+      const now = new Date();
+      const gracePeriodSeconds = convertPeriodToSeconds(this.options.cleanupGracePeriod);
+      //check if the cleanup record is older than the grace period
+      if ((now.getTime() - cleanupTime.getTime()) / 1000 > gracePeriodSeconds) {
+        afLogger.debug(`Key: ${originalKey} is expired. Checking if it can be deleted...`);
+        const notDeletionKey = await this.options.cleanupKeyValueAdapter.get('clean=false||' + originalKey);
+        afLogger.debug(`Not deletion key: ${notDeletionKey}`);
+        //check if the key is marked for not deletion
+        if (notDeletionKey) {
+          // If the key is marked for not deletion, we skip the deletion process and remove the cleanup marker
+          afLogger.debug(`Key: ${originalKey} is marked for not deletion. Skipping...`);
+          await this.options.cleanupKeyValueAdapter.delete(cleanupKey);
+        } else {
+          // If the key is not marked for not deletion, we proceed to delete the object from S3 and remove the cleanup marker
+          afLogger.debug(`Deleting key: ${originalKey} from S3...`);
+          try {
+            await this.getClient().send(
+              new DeleteObjectCommand({
+                Bucket: this.options.bucket,
+                Key: originalKey,
+              })
+            );
+            afLogger.debug(`Key: ${originalKey} deleted from S3. Removing cleanup marker...`);
+            await this.options.cleanupKeyValueAdapter.delete(cleanupKey);
+          } catch (error) {
+            afLogger.error(`Error deleting key: ${originalKey} from S3: ${error}`);
+          }
+        }
+
+      }
+    }
+  }
+
+  protected checkAndRunCleanup(): void {
+    const now = new Date();
+    if (!this.lastCleanupCheckDate || (now.getTime() - this.lastCleanupCheckDate.getTime()) > convertPeriodToSeconds(this.options.cleanupCheckInterval) * 1000) {
+      this.runCleanup();
+      this.lastCleanupCheckDate = now;
+    }
+  }
+
+
   protected getClient(): S3Client {
+    this.checkAndRunCleanup();
     if (!this.s3) {
       this.s3 = new S3Client({
         region: this.options.region,
@@ -76,6 +146,7 @@ export default class AdminForthAdapterS3Storage implements StorageAdapter {
       Key: key,
     });
     const uploadUrl = await getSignedUrl(this.getClient(), command, { expiresIn });
+    this.markKeyForDeletation(key);
     return {
       uploadUrl,
       uploadExtraParams: {}

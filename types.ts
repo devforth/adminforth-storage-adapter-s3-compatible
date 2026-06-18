@@ -67,4 +67,18 @@ export interface AdapterOptions {
    * A separate scheduler/worker is expected to process these markers later.
    */
   cleanupKeyValueAdapter: KeyValueAdapter;
+
+  /**
+   * Optional interval for checking cleanup markers.
+   * Default: "1h" (1 hour)
+   */
+  cleanupCheckInterval?: string;
+
+  /**
+   * Optional grace period for cleanup markers.
+   * Files marked for deletion will be deleted only after this period has passed.
+   * Default: "7d" (7 days)
+   */
+  cleanupGracePeriod?: string; 
+
 }
