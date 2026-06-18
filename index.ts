@@ -41,11 +41,23 @@ export default class AdminForthAdapterS3Storage implements StorageAdapter {
     afLogger.debug("Running cleanup for S3-compatible storage adapter...");
     //Getting cleanup records from the key-value adapter
     const cleanupRecords: Record<string, string>[] = await this.options.cleanupKeyValueAdapter.listByPrefix("clean=true||", 10);
-    for (const cleanupRecord in cleanupRecords) {
-      const cleanupKey = Object.keys(cleanupRecords[cleanupRecord])[0];
-      const { timestamp, originalKey } = this.parceCleanupKey(cleanupKey);
+    for (const cleanupRecord of cleanupRecords) {
+      const cleanupKey = Object.keys(cleanupRecord)[0];
+      if (!cleanupKey) {
+        afLogger.error("Skipping cleanup record because it has no key");
+        continue;
+      }
+
+      let timestamp: string;
+      let originalKey: string;
+      try {
+        ({ timestamp, originalKey } = this.parceCleanupKey(cleanupKey));
+      } catch (error) {
+        afLogger.error(`Skipping cleanup key with invalid format: ${cleanupKey}. Error: ${error}`);
+        continue;
+      }
       
-      afLogger.debug(`Processing cleanup key: ${cleanupRecord}, original key: ${originalKey}, timestamp: ${timestamp}`);
+      afLogger.debug(`Processing cleanup key: ${cleanupKey}, original key: ${originalKey}, timestamp: ${timestamp}`);
       const cleanupTime = new Date(timestamp);
       const now = new Date();
       const gracePeriodSeconds = convertPeriodToSeconds(this.options.cleanupGracePeriod);
@@ -83,7 +95,9 @@ export default class AdminForthAdapterS3Storage implements StorageAdapter {
   protected checkAndRunCleanup(): void {
     const now = new Date();
     if (!this.lastCleanupCheckDate || (now.getTime() - this.lastCleanupCheckDate.getTime()) > convertPeriodToSeconds(this.options.cleanupCheckInterval) * 1000) {
-      this.runCleanup();
+      void this.runCleanup().catch((error) => {
+        afLogger.error(`Error running cleanup: ${error}`);
+      });
       this.lastCleanupCheckDate = now;
     }
   }
