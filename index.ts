@@ -2,11 +2,8 @@ import {
   S3Client,
   PutObjectCommand,
   GetObjectCommand,
-  PutObjectTaggingCommand,
   HeadBucketCommand,
   ObjectCannedACL,
-  GetBucketLifecycleConfigurationCommand,
-  PutBucketLifecycleConfigurationCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { Readable } from 'stream';
@@ -14,9 +11,6 @@ import { Readable } from 'stream';
 import type { StorageAdapter } from "adminforth";
 import { afLogger } from "adminforth";
 import type { AdapterOptions } from "./types.js";
-
-const CLEANUP_TAG_KEY = "adminforth-candidate-for-cleanup";
-const CLEANUP_RULE_ID = "adminforth-unused-cleaner";
 
 export default class AdminForthAdapterS3Storage implements StorageAdapter {
   protected s3: S3Client;
@@ -26,21 +20,65 @@ export default class AdminForthAdapterS3Storage implements StorageAdapter {
     this.options = options;
   }
 
+  protected getClient(): S3Client {
+    if (!this.s3) {
+      this.s3 = new S3Client({
+        region: this.options.region,
+        endpoint: this.options.endpoint,
+        forcePathStyle: this.options.forcePathStyle,
+        credentials: {
+          accessKeyId: this.options.accessKeyId,
+          secretAccessKey: this.options.secretAccessKey,
+        },
+      });
+    }
+
+    return this.s3;
+  }
+
+  protected getCleanupDeletionMarkKey(key: string): string {
+    return `clean=true||${new Date().toISOString()}||${key}`;
+  }
+
+  protected getCleanupNotDeletionMarkKey(key: string): string {
+    return `clean=false||${key}`;
+  }
+
+  protected encodeKeyForUrl(key: string): string {
+    return key.split('/').map(encodeURIComponent).join('/');
+  }
+
+  protected buildPublicObjectUrl(key: string): string {
+    const encodedKey = this.encodeKeyForUrl(key);
+    const normalizedPublicBaseUrl = this.options.publicBaseUrl?.replace(/\/$/, '');
+    if (normalizedPublicBaseUrl) {
+      return `${normalizedPublicBaseUrl}/${encodedKey}`;
+    }
+
+    const normalizedEndpoint = this.options.endpoint?.replace(/\/$/, '');
+    if (normalizedEndpoint) {
+      if (this.options.forcePathStyle) {
+        return `${normalizedEndpoint}/${this.options.bucket}/${encodedKey}`;
+      }
+
+      const endpointUrl = new URL(normalizedEndpoint);
+      return `${endpointUrl.protocol}//${this.options.bucket}.${endpointUrl.host}/${encodedKey}`;
+    }
+
+    return `https://${this.options.bucket}.s3.${this.options.region}.amazonaws.com/${encodedKey}`;
+  }
+
   async getUploadSignedUrl(key: string, contentType: string, expiresIn = 3600): Promise<{ uploadUrl: string, uploadExtraParams:  Record<string, string> }> {
-    const tagline = `${CLEANUP_TAG_KEY}=true`;
     const command = new PutObjectCommand({
       Bucket: this.options.bucket,
       ContentType: contentType,
       ACL: (this.options.s3ACL || 'private') as  ObjectCannedACL,
       Key: key,
-      Tagging: tagline,
     });
-    const uploadUrl = await getSignedUrl(this.s3, command, { expiresIn, unhoistableHeaders: new Set(['x-amz-tagging']) });
+    const uploadUrl = await getSignedUrl(this.getClient(), command, { expiresIn });
     return {
       uploadUrl,
-      uploadExtraParams: {
-        'x-amz-tagging': tagline
-      }
+      uploadExtraParams: {}
     };
   }
 
@@ -50,117 +88,49 @@ export default class AdminForthAdapterS3Storage implements StorageAdapter {
       Key: key,
     });
     if (this.options.s3ACL === "public-read") {
-      return `https://${this.options.bucket}.s3.${this.options.region}.amazonaws.com/${key}`;
+      return this.buildPublicObjectUrl(key);
     }
     // If the bucket is private, generate a presigned URL
     // that expires in the specified time
     // (default is 1 hour)
-    return await getSignedUrl(this.s3, command, { expiresIn });
+    return await getSignedUrl(this.getClient(), command, { expiresIn });
   }
 
   async markKeyForDeletation(key: string): Promise<void> {
     afLogger.error("Method \"markKeyForDeletation\" is deprecated, use markKeyForDeletion instead");
-    const command = new PutObjectTaggingCommand({
-      Bucket: this.options.bucket,
-      Key: key,
-      Tagging: {
-        TagSet: [{ Key: CLEANUP_TAG_KEY, Value: "true" }],
-      },
-    });
-    await this.s3.send(command);
+    await this.markKeyForDeletion(key);
   }
 
   async markKeyForNotDeletation(key: string): Promise<void> {
     afLogger.error("Method \"markKeyForNotDeletation\" is deprecated, use markKeyForNotDeletion instead");
-    const command = new PutObjectTaggingCommand({
-      Bucket: this.options.bucket,
-      Key: key,
-      Tagging: {
-        TagSet: [],
-      },
-    });
-    await this.s3.send(command);
+    await this.markKeyForNotDeletion(key);
   }
 
   async markKeyForDeletion(key: string): Promise<void> {
-    const command = new PutObjectTaggingCommand({
-      Bucket: this.options.bucket,
-      Key: key,
-      Tagging: {
-        TagSet: [{ Key: CLEANUP_TAG_KEY, Value: "true" }],
-      },
-    });
-    await this.s3.send(command);
+    const cleanupMarkerKey = this.getCleanupDeletionMarkKey(key);
+    await this.options.cleanupKeyValueAdapter.set(cleanupMarkerKey, key);
+    await this.options.cleanupKeyValueAdapter.delete(this.getCleanupNotDeletionMarkKey(key));
   }
 
   async markKeyForNotDeletion(key: string): Promise<void> {
-    const command = new PutObjectTaggingCommand({
-      Bucket: this.options.bucket,
-      Key: key,
-      Tagging: {
-        TagSet: [],
-      },
-    });
-    await this.s3.send(command);
+    const cleanupMarkerKey = this.getCleanupNotDeletionMarkKey(key);
+    await this.options.cleanupKeyValueAdapter.set(cleanupMarkerKey, key);
   }
 
   async setupLifecycle(): Promise<void> {
     if (!this.options.accessKeyId || !this.options.secretAccessKey) {
-      throw new Error("Missing AWS credentials in environment variables");
+      throw new Error("Missing S3 credentials in environment variables");
     }
-    this.s3 = new S3Client({
-      region: this.options.region,
-      credentials: {
-        accessKeyId: this.options.accessKeyId,
-        secretAccessKey: this.options.secretAccessKey,
-      },
-    });
+
+    this.getClient();
+
     try {
-      await this.s3.send(new HeadBucketCommand({ Bucket: this.options.bucket }));
+      await this.getClient().send(new HeadBucketCommand({ Bucket: this.options.bucket }));
     } catch {
       throw new Error(`Bucket "${this.options.bucket}" does not exist`);
     }
 
-    let ruleExists = false;
-    try {
-      const res = await this.s3.send(
-        new GetBucketLifecycleConfigurationCommand({ Bucket: this.options.bucket })
-      );
-      ruleExists = res.Rules?.some((r) => r.ID === CLEANUP_RULE_ID) ?? false;
-    } catch (e: any) {
-      if (e.name !== "NoSuchLifecycleConfiguration") {
-        afLogger.error(`Error checking lifecycle config: ${e}`);
-        throw e;
-      }
-    }
-
-    if (!ruleExists) {
-      await this.s3.send(
-        new PutBucketLifecycleConfigurationCommand({
-          Bucket: this.options.bucket,
-          LifecycleConfiguration: {
-            Rules: [
-              {
-                ID: CLEANUP_RULE_ID,
-                Status: "Enabled",
-                Filter: {
-                  Tag: {
-                    Key: CLEANUP_TAG_KEY,
-                    Value: "true",
-                  },
-                },
-                Expiration: {
-                  Days: 2,
-                },
-              },
-            ],
-          },
-        })
-      );
-      afLogger.debug(`✅ Lifecycle rule "${CLEANUP_RULE_ID}" created.`);
-    } else {
-      afLogger.debug(`ℹ️ Lifecycle rule "${CLEANUP_RULE_ID}" already exists.`);
-    }
+    afLogger.debug("S3-compatible adapter initialized. Cleanup scheduler should use cleanupKeyValueAdapter records.");
   }
 
   objectCanBeAccesedPublicly(): Promise<boolean> {
@@ -170,11 +140,26 @@ export default class AdminForthAdapterS3Storage implements StorageAdapter {
   async isInternalUrl(url: string): Promise<boolean> {
     try {
       const parsedUrl = new URL(url);
+      const endpointHost = this.options.endpoint ? new URL(this.options.endpoint).hostname : null;
+      const publicBaseHost = this.options.publicBaseUrl ? new URL(this.options.publicBaseUrl).hostname : null;
       const standardHost = `${this.options.bucket}.s3.${this.options.region}.amazonaws.com`;
       const legacyHost = `${this.options.bucket}.s3.amazonaws.com`;
       
       if (parsedUrl.hostname === standardHost || parsedUrl.hostname === legacyHost) {
         return true;
+      }
+
+      if (publicBaseHost && parsedUrl.hostname === publicBaseHost) {
+        return true;
+      }
+
+      if (endpointHost) {
+        if (parsedUrl.hostname === endpointHost && parsedUrl.pathname.startsWith(`/${this.options.bucket}/`)) {
+          return true;
+        }
+        if (parsedUrl.hostname === `${this.options.bucket}.${endpointHost}`) {
+          return true;
+        }
       }
 
       if (parsedUrl.hostname.includes('amazonaws.com') && parsedUrl.pathname.startsWith(`/${this.options.bucket}/`)) {
@@ -196,7 +181,7 @@ export default class AdminForthAdapterS3Storage implements StorageAdapter {
       Key: key,
     });
 
-    const body = await this.s3.send(command);
+    const body = await this.getClient().send(command);
     const stream = body.Body;
 
     if (!(stream instanceof Readable)) {
