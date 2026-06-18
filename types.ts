@@ -58,13 +58,16 @@ export interface AdapterOptions {
   publicBaseUrl?: string;
 
   /**
-   * Key-value storage for cleanup markers.
+   * Key-value storage for cleanup markers. Cleanup markers are used to track files in temporary state, which were uploaded via presign URLs 
+   * but not yet commited on UI by calling "Save" button on create or update form. 
+   * This is required for S3-compatible providers that do not support object tagging (like Cloudflare R2).
+   * Original s3 adapter does not need it because it uses S3 object tags for cleanup markers, but most of s3-compatible providers do not support object tagging, so this adapter uses a key-value storage for cleanup markers instead.
+   * 
+   * If keys are lost in this key-value storage (e.g. due to non-persisteed KV-storage), the risk is that some files may be left in the bucket when not linked to any record in the database.
+   * So in case of losing there might be under-cleanup but never over-cleanup files in the bucket.
+   * 
+   * Anyway we recommend using a persistent key-value storage for cleanup markers to keep the bucket clean and avoid unnecessary costs for storing unlinked files.
    *
-   * This adapter writes cleanup intents here instead of using S3 object tags:
-   * - markKeyForDeletion   -> clean=true||<iso-date>||<file-key>
-   * - markKeyForNotDeletion -> clean=false||<file-key>
-   *
-   * A separate scheduler/worker is expected to process these markers later.
    */
   cleanupKeyValueAdapter: KeyValueAdapter;
 
