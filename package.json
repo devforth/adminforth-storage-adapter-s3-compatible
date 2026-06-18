@@ -50,7 +50,7 @@
     ],
     "branches": [
       "main",
-      {
+      { 
         "name": "next",
         "prerelease": true
       }
