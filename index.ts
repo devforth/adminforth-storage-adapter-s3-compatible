@@ -104,7 +104,9 @@ export default class AdminForthAdapterS3Storage implements StorageAdapter {
 
 
   protected getClient(): S3Client {
-    this.checkAndRunCleanup();
+    if (this.options.cleanupKeyValueAdapter) {
+      this.checkAndRunCleanup();
+    }
     if (!this.s3) {
       this.s3 = new S3Client({
         region: this.options.region,
@@ -130,6 +132,19 @@ export default class AdminForthAdapterS3Storage implements StorageAdapter {
 
   protected encodeKeyForUrl(key: string): string {
     return key.split('/').map(encodeURIComponent).join('/');
+  }
+
+  protected deleteKeyFromS3(key: string): Promise<void> {
+    return this.getClient().send(
+      new DeleteObjectCommand({
+        Bucket: this.options.bucket,
+        Key: key,
+      })
+    ).then(() => {
+      afLogger.debug(`Key: ${key} deleted from S3.`);
+    }).catch((error) => {
+      afLogger.error(`Error deleting key: ${key} from S3: ${error}`);
+    });
   }
 
   protected buildPublicObjectUrl(key: string): string {
@@ -160,7 +175,9 @@ export default class AdminForthAdapterS3Storage implements StorageAdapter {
       Key: key,
     });
     const uploadUrl = await getSignedUrl(this.getClient(), command, { expiresIn });
-    this.markKeyForDeletation(key);
+    if (this.options.cleanupKeyValueAdapter) {
+      this.markKeyForDeletion(key);
+    }
     return {
       uploadUrl,
       uploadExtraParams: {}
@@ -192,12 +209,21 @@ export default class AdminForthAdapterS3Storage implements StorageAdapter {
   }
 
   async markKeyForDeletion(key: string): Promise<void> {
+    if (!this.options.cleanupKeyValueAdapter) {
+      afLogger.warn(`cleanupKeyValueAdapter is not provided. Cannot mark key ${key} for deletion and delete it immidiately`);
+      this.deleteKeyFromS3(key);
+      return;
+    }
     const cleanupMarkerKey = this.getCleanupDeletionMarkKey(key);
     await this.options.cleanupKeyValueAdapter.set(cleanupMarkerKey, key);
     await this.options.cleanupKeyValueAdapter.delete(this.getCleanupNotDeletionMarkKey(key));
   }
 
   async markKeyForNotDeletion(key: string): Promise<void> {
+    if (!this.options.cleanupKeyValueAdapter) {
+      afLogger.warn(`cleanupKeyValueAdapter is not provided. Cannot mark key ${key} for not deletion`);
+      return;
+    }
     const cleanupMarkerKey = this.getCleanupNotDeletionMarkKey(key);
     await this.options.cleanupKeyValueAdapter.set(cleanupMarkerKey, key);
   }
@@ -215,7 +241,7 @@ export default class AdminForthAdapterS3Storage implements StorageAdapter {
       throw new Error(`Bucket "${this.options.bucket}" does not exist`);
     }
 
-    afLogger.debug("S3-compatible adapter initialized. Cleanup scheduler should use cleanupKeyValueAdapter records.");
+    afLogger.debug(`S3-compatible adapter initialized for bucket ${this.options.bucket}`);
   }
 
   objectCanBeAccesedPublicly(): Promise<boolean> {

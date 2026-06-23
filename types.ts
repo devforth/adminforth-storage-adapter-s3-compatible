@@ -69,16 +69,16 @@ export interface AdapterOptions {
    * Anyway we recommend using a persistent key-value storage for cleanup markers to keep the bucket clean and avoid unnecessary costs for storing unlinked files.
    *
    */
-  cleanupKeyValueAdapter: KeyValueAdapter;
+  cleanupKeyValueAdapter?: KeyValueAdapter;
 
   /**
-   * Optional interval for checking cleanup markers.
+   * Optional interval for checking cleanup markers. Will be used only if cleanupKeyValueAdapter is provided.
    * Default: "1h" (1 hour)
    */
   cleanupCheckInterval?: string;
 
   /**
-   * Optional grace period for cleanup markers.
+   * Optional grace period for cleanup markers. Will be used only if cleanupKeyValueAdapter is provided.
    * Files marked for deletion will be deleted only after this period has passed.
    * Default: "7d" (7 days)
    */
