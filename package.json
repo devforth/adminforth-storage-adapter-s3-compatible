@@ -23,6 +23,7 @@
     "type": "git",
     "url": "https://github.com/devforth/adminforth-storage-adapter-s3-compatible.git"
   },
+  "homepage": "https://adminforth.dev/docs/tutorial/Adapters/storage-adapters/#s3-compatible-adapter",
   "dependencies": {
     "@aws-sdk/client-s3": "^3.800.0",
     "@aws-sdk/s3-request-presigner": "^3.800.0",
