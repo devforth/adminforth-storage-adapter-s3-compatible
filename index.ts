@@ -310,4 +310,14 @@ export default class AdminForthAdapterS3Storage implements StorageAdapter {
 
     return `data:${contentType};base64,${base64String}`;
   }
+
+  /**
+   * Creates an object writer for the specified key and content type.
+   * For example, this can be used to write large files in chunks or streams (AWS S3 Multipart Upload).
+   * @param key - The key of the file to be written e.g. "uploads/file.txt"
+   * @param contentType - The MIME type of the file to be written e.g. "image/png"
+   */
+  async createWriteStream(key: string, contentType: string): Promise<any> {
+    throw new Error("method is not implemented yet");
+  }
 }
