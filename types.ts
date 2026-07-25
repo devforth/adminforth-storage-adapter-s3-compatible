@@ -1,5 +1,4 @@
-import type { KeyValueAdapter } from "adminforth";
-
+import type { KeyValueAdapter, PeriodString } from "adminforth";
 /**
  * Configuration for S3-compatible storage providers (AWS S3, Cloudflare R2, MinIO, etc.).
  */
@@ -75,13 +74,13 @@ export interface AdapterOptions {
    * Optional interval for checking cleanup markers. Will be used only if cleanupKeyValueAdapter is provided.
    * Default: "1h" (1 hour)
    */
-  cleanupCheckInterval?: string;
+  cleanupCheckInterval?: PeriodString;
 
   /**
    * Optional grace period for cleanup markers. Will be used only if cleanupKeyValueAdapter is provided.
    * Files marked for deletion will be deleted only after this period has passed.
    * Default: "7d" (7 days)
    */
-  cleanupGracePeriod?: string; 
+  cleanupGracePeriod?: PeriodString;
 
 }
