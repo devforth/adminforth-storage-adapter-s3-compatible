@@ -17,6 +17,8 @@ export default class AdminForthAdapterS3Storage implements StorageAdapter {
   protected s3: S3Client;
   protected options: AdapterOptions;
   protected lastCleanupCheckDate: Date | null = null;
+
+  private static strictContentTypeWarned = false;
   
   constructor(options: AdapterOptions) {
     this.options = options;
@@ -167,14 +169,18 @@ export default class AdminForthAdapterS3Storage implements StorageAdapter {
     return `https://${this.options.bucket}.s3.${this.options.region}.amazonaws.com/${encodedKey}`;
   }
 
-  async getUploadSignedUrl(key: string, contentType: string, expiresIn = 3600): Promise<{ uploadUrl: string, uploadExtraParams:  Record<string, string> }> {
+  async getUploadSignedUrl(key: string, contentType: string, expiresIn = 3600, contentLength?: number): Promise<{ uploadUrl: string, uploadExtraParams:  Record<string, string> }> {
     const command = new PutObjectCommand({
       Bucket: this.options.bucket,
       ContentType: contentType,
+      ContentLength: contentLength,
       ACL: (this.options.s3ACL || 'private') as  ObjectCannedACL,
       Key: key,
     });
-    const uploadUrl = await getSignedUrl(this.getClient(), command, { expiresIn });
+    const uploadUrl = await getSignedUrl(this.getClient(), command, {
+      expiresIn,
+      ...(this.options.strictContentType && { signableHeaders: new Set(['content-type']) }),
+    });
     if (this.options.cleanupKeyValueAdapter) {
       this.markKeyForDeletion(key);
     }
@@ -229,6 +235,11 @@ export default class AdminForthAdapterS3Storage implements StorageAdapter {
   }
 
   async setupLifecycle(): Promise<void> {
+    if (!this.options.strictContentType && !AdminForthAdapterS3Storage.strictContentTypeWarned) {
+      AdminForthAdapterS3Storage.strictContentTypeWarned = true;
+      afLogger.warn(`strictContentType is off: uploads can be stored with any Content-Type sent by the client, e.g. text/html. Update @adminforth/bulk-ai-flow, markdown, rich-editor and oauth, then set strictContentType: true. See https://adminforth.dev/docs/tutorial/Adapters/storage-adapters/#strict-content-type`);
+    }
+
     if (!this.options.accessKeyId || !this.options.secretAccessKey) {
       throw new Error("Missing S3 credentials in environment variables");
     }

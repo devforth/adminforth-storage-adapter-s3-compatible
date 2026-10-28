@@ -34,6 +34,15 @@ export interface AdapterOptions {
   s3ACL?: 'private' | 'public-read';
 
   /**
+   * Sign the Content-Type of uploads, so the client can't store a file with another type than the one
+   * the upload plugin picked by the file extension (e.g. text/html under a .png key).
+   * Turn it on after updating @adminforth/bulk-ai-flow, @adminforth/markdown, @adminforth/rich-editor and
+   * @adminforth/oauth: their older versions send the browser type and get 403 when it differs.
+   * Default: false. It will become true in the next major version.
+   */
+  strictContentType?: boolean;
+
+  /**
    * Custom S3 endpoint URL.
    * Required for most S3-compatible providers (for example Cloudflare R2).
    * Example: "https://<account-id>.r2.cloudflarestorage.com"
