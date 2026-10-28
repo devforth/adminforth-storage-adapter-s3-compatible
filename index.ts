@@ -169,10 +169,11 @@ export default class AdminForthAdapterS3Storage implements StorageAdapter {
     return `https://${this.options.bucket}.s3.${this.options.region}.amazonaws.com/${encodedKey}`;
   }
 
-  async getUploadSignedUrl(key: string, contentType: string, expiresIn = 3600): Promise<{ uploadUrl: string, uploadExtraParams:  Record<string, string> }> {
+  async getUploadSignedUrl(key: string, contentType: string, expiresIn = 3600, contentLength?: number): Promise<{ uploadUrl: string, uploadExtraParams:  Record<string, string> }> {
     const command = new PutObjectCommand({
       Bucket: this.options.bucket,
       ContentType: contentType,
+      ContentLength: contentLength,
       ACL: (this.options.s3ACL || 'private') as  ObjectCannedACL,
       Key: key,
     });
